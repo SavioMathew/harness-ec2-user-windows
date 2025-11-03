@@ -1,0 +1,40 @@
+pipeline:
+  name: EC2-USER-Windows
+  identifier: EC2USERWindows
+  projectIdentifier: EC2USERWindows
+  orgIdentifier: default
+  tags: {}
+  stages:
+    - stage:
+        name: EC2-User-Windows
+        identifier: EC2UserWindows
+        description: ""
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: TerraformApply
+                  name: TerraformApply_2
+                  identifier: TerraformApply_2
+                  spec:
+                    provisionerIdentifier: EC2_USER_Windows
+                    configuration:
+                      type: Inline
+                      spec:
+                        configFiles:
+                          store:
+                            spec:
+                              connectorRef: guthubwindows
+                              folderPath: .
+                              gitFetchType: Branch
+                              branch: main
+                            type: Github
+                        providerCredential:
+                          type: Aws
+                          spec:
+                            connectorRef: AWSWindowsConnector
+                            region: us-west-2
+                            roleArn: ""
+                  timeout: 10m
+        tags: {}
