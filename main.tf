@@ -28,6 +28,38 @@ resource "aws_key_pair" "generated" {
   public_key = tls_private_key.this[0].public_key_openssh
 }
 
+# >>> ADD THIS BLOCK (S3 bucket + encryption) <<<
+resource "aws_s3_bucket" "private_keys" {        # NEW
+  bucket = "my-tf-private-key-store"             # NEW  <-- change bucket name to be unique
+  acl    = "private"                             # NEW
+  tags = {                                       # NEW
+    Name = "TerraformPrivateKeys"                # NEW
+  }                                              # NEW
+}                                                # NEW
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "default" {  # NEW
+  bucket = aws_s3_bucket.private_keys.id                                   # NEW
+  rule {                                                                   # NEW
+    apply_server_side_encryption_by_default {                              # NEW
+      sse_algorithm = "AES256"                                             # NEW
+    }                                                                      # NEW
+  }                                                                        # NEW
+}                                                                          # NEW
+
+# >>> ADD THIS BLOCK (upload private key to S3) <<<
+resource "aws_s3_object" "private_key_pem" {        # NEW
+  count   = var.create_key_pair ? 1 : 0             # NEW
+  bucket  = aws_s3_bucket.private_keys.bucket        # NEW
+  key     = "keys/${aws_key_pair.generated[0].key_name}.pem"  # NEW
+  content = tls_private_key.this[0].private_key_pem  # NEW
+  server_side_encryption = "AES256"                 # NEW
+  acl = "private"                                   # NEW
+  tags = {                                          # NEW
+    ManagedBy = "Terraform"                         # NEW
+  }                                                 # NEW
+}                                                   # NEW
+# >>> END OF S3 BLOCKS <<<
+
 # Security group allowing RDP only from allowed CIDR
 resource "aws_security_group" "rdp" {
   name        = "tf-windows-rdp-sg"
@@ -134,3 +166,9 @@ output "generated_private_key_pem" {
   value       = var.create_key_pair ? tls_private_key.this[0].private_key_pem : ""
   sensitive   = true
 }
+
+# >>> ADD THIS OUTPUT AT THE END <<<
+output "private_key_s3_path" {                     # NEW
+  value       = var.create_key_pair ? "s3://${aws_s3_bucket.private_keys.bucket}/keys/${aws_key_pair.generated[0].key_name}.pem" : null  # NEW
+  description = "S3 path where the PEM private key is stored"   # NEW
+}                                                  # NEW
