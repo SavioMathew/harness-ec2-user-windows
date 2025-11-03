@@ -15,55 +15,24 @@ locals {
   windows_password = "Jake#25081997"
 }
 
-# Optional creation of an EC2 key pair (stores public key only)
+# Generate a new RSA private key if requested
 resource "tls_private_key" "this" {
-  count      = var.create_key_pair ? 1 : 0
-  algorithm  = "RSA"
-  rsa_bits   = 4096
+  count     = var.create_key_pair ? 1 : 0
+  algorithm = "RSA"
+  rsa_bits  = 4096
 }
 
+# Create AWS key pair using the generated public key
 resource "aws_key_pair" "generated" {
   count      = var.create_key_pair ? 1 : 0
   key_name   = "tf-win-key"
   public_key = tls_private_key.this[0].public_key_openssh
 }
 
-# >>> ADD THIS BLOCK (S3 bucket + encryption) <<<
-resource "aws_s3_bucket" "private_keys" {        # NEW
-  bucket = "my-tf-private-key-store"             # NEW  <-- change bucket name to be unique
-  acl    = "private"                             # NEW
-  tags = {                                       # NEW
-    Name = "TerraformPrivateKeys"                # NEW
-  }                                              # NEW
-}                                                # NEW
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "default" {  # NEW
-  bucket = aws_s3_bucket.private_keys.id                                   # NEW
-  rule {                                                                   # NEW
-    apply_server_side_encryption_by_default {                              # NEW
-      sse_algorithm = "AES256"                                             # NEW
-    }                                                                      # NEW
-  }                                                                        # NEW
-}                                                                          # NEW
-
-# >>> ADD THIS BLOCK (upload private key to S3) <<<
-resource "aws_s3_object" "private_key_pem" {        # NEW
-  count   = var.create_key_pair ? 1 : 0             # NEW
-  bucket  = aws_s3_bucket.private_keys.bucket        # NEW
-  key     = "keys/${aws_key_pair.generated[0].key_name}.pem"  # NEW
-  content = tls_private_key.this[0].private_key_pem  # NEW
-  server_side_encryption = "AES256"                 # NEW
-  acl = "private"                                   # NEW
-  tags = {                                          # NEW
-    ManagedBy = "Terraform"                         # NEW
-  }                                                 # NEW
-}                                                   # NEW
-# >>> END OF S3 BLOCKS <<<
-
-# Security group allowing RDP only from allowed CIDR
+# Security group allowing RDP (3389)
 resource "aws_security_group" "rdp" {
   name        = "tf-windows-rdp-sg"
-  description = "Allow RDP"
+  description = "Allow RDP access"
   vpc_id      = "vpc-0c59173db44beeca5"
 
   ingress {
@@ -71,7 +40,7 @@ resource "aws_security_group" "rdp" {
     to_port     = 3389
     protocol    = "tcp"
     cidr_blocks = [var.allowed_cidr]
-    description = "RDP"
+    description = "RDP access"
   }
 
   egress {
@@ -82,8 +51,7 @@ resource "aws_security_group" "rdp" {
   }
 }
 
-
-
+# Lookup available subnets in your VPC
 data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
@@ -91,19 +59,21 @@ data "aws_subnets" "default" {
   }
 }
 
-# pick first subnet in default VPC
 locals {
   subnet_id = try(data.aws_subnets.default.ids[0], null)
 }
 
-# Get latest Windows Server 2019 Core/2022 Base AMI (Amazon-owned)
+# Get latest Windows Server 2019 or 2022 AMI
 data "aws_ami" "windows" {
   most_recent = true
   owners      = [var.ami_owner]
 
   filter {
     name   = "name"
-    values = ["Windows_Server-2019-English-Full-Base-*","Windows_Server-2022-English-Full-Base-*"]
+    values = [
+      "Windows_Server-2019-English-Full-Base-*",
+      "Windows_Server-2022-English-Full-Base-*"
+    ]
   }
 
   filter {
@@ -117,7 +87,30 @@ data "aws_ami" "windows" {
   }
 }
 
-# EC2 instance
+# Create the S3 bucket to store private key (no encryption)
+resource "aws_s3_bucket" "private_keys" {
+  bucket = "my-tf-private-key-store-12345"   # <-- CHANGE this to a unique name
+  acl    = "private"
+
+  tags = {
+    Name = "TerraformPrivateKeys"
+  }
+}
+
+# Upload generated PEM private key to S3
+resource "aws_s3_object" "private_key_pem" {
+  count   = var.create_key_pair ? 1 : 0
+  bucket  = aws_s3_bucket.private_keys.bucket
+  key     = "keys/${aws_key_pair.generated[0].key_name}.pem"
+  content = tls_private_key.this[0].private_key_pem
+  acl     = "private"
+
+  tags = {
+    ManagedBy = "Terraform"
+  }
+}
+
+# EC2 instance configuration
 resource "aws_instance" "windows" {
   ami                         = data.aws_ami.windows.id
   instance_type               = var.instance_type
@@ -126,7 +119,7 @@ resource "aws_instance" "windows" {
   subnet_id                   = local.subnet_id
   associate_public_ip_address = true
 
-  # EC2 user data: PowerShell script to create user & set ACLs.
+  # PowerShell script to create user
   user_data = base64encode(templatefile("${path.module}/user_data.ps1.tpl", {
     windows_username = var.windows_username
     windows_password = local.windows_password
@@ -142,7 +135,10 @@ resource "aws_instance" "windows" {
   }
 }
 
-# Allow retrieving subnet if needed
+# ----------------------------
+# Outputs
+# ----------------------------
+
 output "instance_id" {
   value = aws_instance.windows.id
 }
@@ -162,13 +158,12 @@ output "windows_user_password" {
 }
 
 output "generated_private_key_pem" {
-  description = "PEM private key (only when Terraform created a key pair). Save this securely if created."
+  description = "PEM private key (only when Terraform created a key pair)."
   value       = var.create_key_pair ? tls_private_key.this[0].private_key_pem : ""
   sensitive   = true
 }
 
-# >>> ADD THIS OUTPUT AT THE END <<<
-output "private_key_s3_path" {                     # NEW
-  value       = var.create_key_pair ? "s3://${aws_s3_bucket.private_keys.bucket}/keys/${aws_key_pair.generated[0].key_name}.pem" : null  # NEW
-  description = "S3 path where the PEM private key is stored"   # NEW
-}                                                  # NEW
+output "private_key_s3_path" {
+  value       = var.create_key_pair ? "s3://${aws_s3_bucket.private_keys.bucket}/keys/${aws_key_pair.generated[0].key_name}.pem" : null
+  description = "S3 path where the PEM private key is stored"
+}
